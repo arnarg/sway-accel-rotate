@@ -2,26 +2,32 @@ package main
 
 import (
 	"errors"
-	"github.com/Depau/go-iio-sensor-proxy"
-	"github.com/godbus/dbus"
 	"log"
-	"time"
+	"strings"
+
+	"github.com/arnarg/go-iio-sensor-proxy"
+	"github.com/godbus/dbus/v5"
 )
 
 func SwayRotate(orientation string) (err error) {
 	log.Println("Rotating:", orientation)
 
 	var degrees string
+	var matrix string
 
 	switch orientation {
 	case "normal":
 		degrees = "0"
+		matrix = "1 0 0 0 1 0"
 	case "right-up":
 		degrees = "90"
+		matrix = "0 1 0 -1 0 1"
 	case "bottom-up":
 		degrees = "180"
+		matrix = "-1 0 1 0 -1 1"
 	case "left-up":
 		degrees = "270"
+		matrix = "0 -1 1 1 0 0"
 	default:
 		return errors.New("Unrecognized orientation: " + orientation)
 	}
@@ -41,15 +47,21 @@ func SwayRotate(orientation string) (err error) {
 		}
 	}
 
-	// Inputs can't be rotated yet
+	var inputs []Input
+	inputs, err = GetInputs()
 
-	//var inputs []SwayInput
-	//
-	//for _, input := range inputs {
-	//	if input.Type == "touchpad" || (input.Type == "pointer" && strings.Contains(input.Name, "TrackPoint")) {
-	//		err = SwayMsg(nil, "input", "eDP-1", "transform", degrees)
-	//	}
-	//}
+	if err != nil {
+		return
+	}
+
+	for _, input := range inputs {
+		if input.Type == "touch" || input.Type == "tablet_tool" {
+			err = SwayMsg(nil, "--", "input", input.Identifier, "calibration_matrix", matrix)
+			if err != nil {
+				return
+			}
+		}
+	}
 
 	return
 }
@@ -66,23 +78,26 @@ func Release(sensorProxy sensorproxy.SensorProxy) {
 	}
 }
 
-func getOrientationAndRotate(sensorProxy sensorproxy.SensorProxy, previous string) (newOrientation string) {
-	var err error
-	newOrientation, err = sensorProxy.GetAccelerometerOrientation()
+func setupWatch(conn *dbus.Conn) error {
+	return conn.AddMatchSignal(
+		dbus.WithMatchObjectPath("/net/hadess/SensorProxy"),
+		dbus.WithMatchInterface("org.freedesktop.DBus.Properties"),
+		dbus.WithMatchSender("net.hadess.SensorProxy"),
+		dbus.WithMatchMember("PropertiesChanged"),
+	)
+}
 
-	if err != nil {
-		log.Fatal("Failed to get orientation:", err)
-	}
+func watchCurrentOrientation(conn *dbus.Conn, orientCh chan<- string) {
+	c := make(chan *dbus.Signal, 10)
+	conn.Signal(c)
 
-	if newOrientation != previous {
-		err = SwayRotate(newOrientation)
-
-		if err != nil {
-			log.Fatal("Unable to rotate:", err)
+	for v := range c {
+		message := v.Body[1].(map[string]dbus.Variant)
+		orientation, ok := message["AccelerometerOrientation"]
+		if ok {
+			orientCh <- strings.ReplaceAll(orientation.String(), "\"", "")
 		}
 	}
-
-	return
 }
 
 func main() {
@@ -104,14 +119,22 @@ func main() {
 		log.Fatal("No accelerometer found")
 	}
 
-	//noinspection GoInfiniteFor
-	currentOrientation := "undefined"
+	err = setupWatch(conn)
+	if err != nil {
+		log.Fatal("Failed setting up watch for orientation.")
+	}
+
+	orientCh := make(chan string)
+	go watchCurrentOrientation(conn, orientCh)
 
 	Claim(sensorProxy)
 	defer Release(sensorProxy)
 
-	for {
-		currentOrientation = getOrientationAndRotate(sensorProxy, currentOrientation)
-		time.Sleep(1e9)
+	for orientation := range orientCh {
+		err = SwayRotate(orientation)
+
+		if err != nil {
+			log.Fatal("Unable to rotate:", err)
+		}
 	}
 }

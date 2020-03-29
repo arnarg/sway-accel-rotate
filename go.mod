@@ -1,8 +1,8 @@
 module github.com/Depau/sway-accel-rotate
 
-go 1.12
+go 1.14
 
 require (
-	github.com/Depau/go-iio-sensor-proxy v0.1.0
-	github.com/godbus/dbus v4.1.0+incompatible
+	github.com/arnarg/go-iio-sensor-proxy v0.2.0
+	github.com/godbus/dbus/v5 v5.0.3
 )
